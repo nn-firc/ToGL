@@ -1,26 +1,4 @@
-//========= Copyright Valve Corporation, All rights reserved. ============//
-//                       TOGL CODE LICENSE
-//
-//  Copyright 2011-2014 Valve Corporation
-//  All Rights Reserved.
-//
-//  Permission is hereby granted, free of charge, to any person obtaining a copy
-//  of this software and associated documentation files (the "Software"), to deal
-//  in the Software without restriction, including without limitation the rights
-//  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-//  copies of the Software, and to permit persons to whom the Software is
-//  furnished to do so, subject to the following conditions:
-//
-//  The above copyright notice and this permission notice shall be included in
-//  all copies or substantial portions of the Software.
-//
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-//  THE SOFTWARE.
+//============ Copyright (c) Valve Corporation, All rights reserved. ============
 //
 // glmgr.h
 //	singleton class, common basis for managing GL contexts
@@ -50,6 +28,7 @@
 #include "cglmbuffer.h"
 #include "cglmquery.h"
 
+#include "tier0/tslist.h"
 #include "tier0/vprof_telemetry.h"
 #include "materialsystem/IShader.h"
 #include "dxabstract_types.h"
@@ -945,7 +924,7 @@ template<typename T> class GLState
 			result = !(temp == data);
 			return result;
 		}
-
+		
 		FORCEINLINE const T &GetData() const { return data; }
 		
 	protected:
@@ -1283,6 +1262,7 @@ public:
 	inline uint GetBytesRemaining() const { return m_nSize - m_nOfs; }
 	inline void *GetPtr() const { return m_pBuf; }
 	inline GLuint GetHandle() const { return m_nBufferObj; }
+    
 
 	void InsertFence()
 	{
@@ -1310,7 +1290,7 @@ public:
 #endif
 		m_nOfs = 0;
 	}
-
+    
 	void Append( uint nSize )
 	{
 		m_nOfs += nSize;
@@ -1328,7 +1308,7 @@ private:
 	GLsync m_nSyncObj;
 #endif
 };
-#endif // !OSX
+#endif // OSX
 
 //===========================================================================//
 
@@ -1356,7 +1336,7 @@ class GLMContext
 
 		// textures
 		// Lock and Unlock reqs go directly to the tex object
-		CGLMTex	*NewTex( GLMTexLayoutKey *key, const char *debugLabel=NULL );
+		CGLMTex	*NewTex( GLMTexLayoutKey *key, uint levels=1, const char *debugLabel=NULL );
 		void	DelTex( CGLMTex	*tex );	
 
 			// options for Blit (replacement for ResolveTex and BlitTex)
@@ -1454,7 +1434,7 @@ class GLMContext
 		FORCEINLINE void DrawRangeElements(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf );
 		void DrawRangeElementsNonInline(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf );
 #else
-		void DrawRangeElements( GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, CGLMBuffer *pIndexBuf );
+        void DrawRangeElements( GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, CGLMBuffer *pIndexBuf );
 #endif
 
 		void	CheckNative( void );
@@ -1533,7 +1513,7 @@ class GLMContext
 #endif
 
 		FORCEINLINE void SetMaxUsedVertexShaderConstantsHint( uint nMaxConstants );
-		FORCEINLINE DWORD GetCurrentOwnerThreadId() const { return m_nCurOwnerThreadId; }
+		FORCEINLINE ThreadId_t GetCurrentOwnerThreadId() const { return m_nCurOwnerThreadId; }
 								
 	protected:
 		friend class GLMgr;				// only GLMgr can make GLMContext objects
@@ -1560,7 +1540,7 @@ class GLMContext
 #ifndef OSX
 		FORCEINLINE GLuint FindSamplerObject( const GLMTexSamplingParams &desiredParams );
 #endif
-
+    
 		FORCEINLINE void SetBufAndVertexAttribPointer( uint nIndex, GLuint nGLName, GLuint stride, GLuint datatype, GLboolean normalized, GLuint nCompCount, const void *pBuf, uint nRevision )
 		{
 			VertexAttribs_t &curAttribs = m_boundVertexAttribs[nIndex];
@@ -1652,11 +1632,11 @@ class GLMContext
 #endif
 
 		CPersistentBuffer* GetCurPersistentBuffer( EGLMBufferType type ) { return &( m_persistentBuffer[m_nCurPersistentBuffer][type] ); }
-
+    
 		// members------------------------------------------
 						
 		// context
-		DWORD							m_nCurOwnerThreadId;
+		ThreadId_t						m_nCurOwnerThreadId;
 		uint							m_nThreadOwnershipReleaseCounter;
 
 		bool							m_bUseSamplerObjects;
@@ -1672,7 +1652,13 @@ class GLMContext
 		int								m_pixelFormatAttribs[100];	// more than enough
 		PseudoNSGLContextPtr			m_nsctx;
 		void *							m_ctx;
+#elif defined( OSX )
+		CGLPixelFormatAttribute			m_pixelFormatAttribs[100];	// more than enough
+		PseudoNSGLContextPtr			m_nsctx;
+		CGLContextObj					m_ctx;
 #endif
+		bool							m_oneCtxEnable;			// true if we use the window's context directly instead of making a second one shared against it
+
 		bool							m_bUseBoneUniformBuffers; // if true, we use two uniform buffers for vertex shader constants vs. one
 
 		// texture form table
@@ -1787,10 +1773,6 @@ class GLMContext
 		CGLMProgram						*m_preload3DTexFragmentProgram;
 		CGLMProgram						*m_preloadCubeTexFragmentProgram;
 
-#if defined( OSX ) && defined( GLMDEBUG )
-		CGLMProgram						*m_boundProgram[ kGLMNumProgramTypes ];
-#endif
-
 		CGLMShaderPairCache				*m_pairCache;				// GLSL only
 		CGLMShaderPair					*m_pBoundPair;				// GLSL only
 
@@ -1851,7 +1833,7 @@ class GLMContext
 		enum { cNumPersistentBuffers = 3 };
 		CPersistentBuffer	m_persistentBuffer[cNumPersistentBuffers][kGLMNumBufferTypes];
 		uint				m_nCurPersistentBuffer;
-
+    
 		void SaveColorMaskAndSetToDefault();
 		void RestoreSavedColorMask();
 		GLColorMaskSingle_t				m_SavedColorMask;
@@ -1879,6 +1861,13 @@ class GLMContext
 		float							m_selKnobMinValue,m_selKnobMaxValue,m_selKnobIncrement;
 #endif
 
+#ifdef _OSX
+		void UpdateSwapchainVariables( bool bForce );
+
+		bool m_bFramerateSmoothing;
+		bool m_bSwapLimit;
+#endif
+
 #if GL_BATCH_PERF_ANALYSIS
 		uint m_nTotalVSUniformCalls;
 		uint m_nTotalVSUniformBoneCalls;
@@ -1889,10 +1878,12 @@ class GLMContext
 		
 		CFlushDrawStatesStats m_FlushStats;
 #endif
+
+	void ProcessTextureDeletes();
+	CTSQueue<CGLMTex*> m_DeleteTextureQueue;
 };
 
 #ifndef OSX
-
 FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf )
 {
 #if GL_ENABLE_INDEX_VERIFICATION
@@ -1914,11 +1905,11 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 	if ( pIndexBuf->m_bPseudo )
 	{
 		// you have to pass actual address, not offset
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_pPseudoBuf );
+		indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_pPseudoBuf );
 	}
 	if (pIndexBuf->m_bUsingPersistentBuffer)
 	{
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_nPersistentBufferStartOffset );
+		indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_nPersistentBufferStartOffset );
 	}
 
 //#if GLMDEBUG
@@ -2003,7 +1994,6 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 
 #endif // GL_ENABLE_INDEX_VERIFICATION
 }
-
 #endif // #ifndef OSX
 
 FORCEINLINE void GLMContext::SetVertexProgram( CGLMProgram *pProg )

@@ -1,26 +1,4 @@
-//========= Copyright Valve Corporation, All rights reserved. ============//
-//                       TOGL CODE LICENSE
-//
-//  Copyright 2011-2014 Valve Corporation
-//  All Rights Reserved.
-//
-//  Permission is hereby granted, free of charge, to any person obtaining a copy
-//  of this software and associated documentation files (the "Software"), to deal
-//  in the Software without restriction, including without limitation the rights
-//  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-//  copies of the Software, and to permit persons to whom the Software is
-//  furnished to do so, subject to the following conditions:
-//
-//  The above copyright notice and this permission notice shall be included in
-//  all copies or substantial portions of the Software.
-//
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-//  THE SOFTWARE.
+//============ Copyright (c) Valve Corporation, All rights reserved. ============
 //
 // glmgr.cpp
 //
@@ -53,6 +31,7 @@
 // NOTE: This can be turned off after launch, but it cannot be turned on after launch--it implies a context-creation-time 
 // behavior.
 ConVar gl_debug_output( "gl_debug_output", "1" );
+ConVar gl_swap_limit( "gl_swap_limit", "1", FCVAR_RELEASE );
 
 //===============================================================================
 
@@ -232,6 +211,81 @@ void GLMDebugPrintf( const char *pMsg, ... )
 	Plat_DebugString( buf );
 }
 
+void CheckGLFBOStatusTMP( const char *comment )
+{
+    return;
+    char errbuf[1024];
+
+    if (!comment)
+    {
+        comment = "";
+    }
+
+    GLenum errorcode2 = 0;
+    GLenum errorcode3 = 0;
+    const char	*decodedStr2 = "";
+    const char	*decodedStr3 = "";
+
+    // dig up the more detailed FBO status
+    errorcode2 = gGL->glCheckFramebufferStatusEXT( GL_READ_FRAMEBUFFER_EXT );
+    
+    decodedStr2 = GLMDecode( eGL_ERROR, errorcode2 );
+    
+    errorcode3 = gGL->glCheckFramebufferStatusEXT( GL_DRAW_FRAMEBUFFER_EXT );
+    
+    decodedStr3 = GLMDecode( eGL_ERROR, errorcode3 );
+    
+    sprintf( errbuf, "\n%s - GL FBO Status %08x/%08x = '%s / %s'\n", comment, errorcode2, errorcode3, decodedStr2, decodedStr3 );
+    printf("%s", errbuf );
+
+}
+
+void CheckGLErrorTMP( const char *comment )
+{
+    return;
+    char errbuf[1024];
+    
+    //borrowed from GLMCheckError.. slightly different
+    
+    if (!comment)
+    {
+        comment = "";
+    }
+    
+    GLenum errorcode = (GLenum)gGL->glGetError();
+    GLenum errorcode2 = 0;
+    GLenum errorcode3 = 0;
+    
+    if ( errorcode != GL_NO_ERROR )
+    {
+        const char	*decodedStr = GLMDecode( eGL_ERROR, errorcode );
+        const char	*decodedStr2 = "";
+        const char	*decodedStr3 = "";
+        
+        if ( errorcode == GL_INVALID_FRAMEBUFFER_OPERATION_EXT )
+        {
+            // dig up the more detailed FBO status
+            errorcode2 = gGL->glCheckFramebufferStatusEXT( GL_READ_FRAMEBUFFER_EXT );
+            
+            decodedStr2 = GLMDecode( eGL_ERROR, errorcode2 );
+  
+            errorcode3 = gGL->glCheckFramebufferStatusEXT( GL_DRAW_FRAMEBUFFER_EXT );
+            
+            decodedStr3 = GLMDecode( eGL_ERROR, errorcode3 );
+
+            sprintf( errbuf, "\n%s - GL Error %08x/%08x/%08x = '%s / %s / %s'\n", comment, errorcode, errorcode2, errorcode3, decodedStr, decodedStr2, decodedStr3 );
+        }
+        else
+        {
+            sprintf( errbuf, "\n%s - GL Error %08x = '%s'\n", comment, errorcode, decodedStr );
+        }
+        
+        printf("%s", errbuf );
+
+//      DebuggerBreak();
+    }
+}
+
 //===============================================================================
 // functions that are dependant on g_pLauncherMgr
 
@@ -272,6 +326,13 @@ inline void GetDesiredPixelFormatAttribsAndRendererInfo( uint **ptrOut, uint *co
 {
 	g_pLauncherMgr->GetDesiredPixelFormatAttribsAndRendererInfo( ptrOut, countOut, rendInfoOut );
 }
+
+#ifdef OSX
+inline PseudoNSGLContextPtr GetNSGLContextForWindow( void* windowref )
+{
+	return g_pLauncherMgr->GetGLContextForWindow( windowref );
+}
+#endif
 
 inline void GetStackCrawl( CStackCrawlParams *params )
 {
@@ -453,6 +514,7 @@ void GLMgr::DelContext( GLMContext *context )
 
 void GLMgr::SetCurrentContext( GLMContext *context )
 {
+// !!! FIXME: why isn't this abstracted in appframework?
 #if defined( USE_SDL )
 	context->m_nCurOwnerThreadId = ThreadGetCurrentId();
 	if ( !MakeContextCurrent( context->m_ctx ) )
@@ -460,15 +522,43 @@ void GLMgr::SetCurrentContext( GLMContext *context )
 		// give up
 		GLMStop();
 	}
+	// Why is there an Assert( 0 ) here? Seems like it's for once we're in game, but we should
+	// hit this on startup so wat?
 	Assert( 0 );
+#elif defined( OSX )
+	context->m_nCurOwnerThreadId = ThreadGetCurrentId();
+	CGLError	cgl_err;
+	cgl_err = CGLSetCurrentContext( context->m_ctx );
+	if (cgl_err)
+	{
+		// give up
+		GLMStop();
+	}
 #endif
 }
 
 GLMContext *GLMgr::GetCurrentContext( void )
 {
+// !!! FIXME: why isn't this abstracted in appframework?
 #if defined( USE_SDL )
 	PseudoGLContextPtr context = GetMainContext();
 	return (GLMContext*) context;
+#elif defined( OSX )
+	CGLContextObj ctx = CGLGetCurrentContext();
+	
+	// Docs say this is always a pointer-sized parameter, even though the API takes an int*
+	intp	glm_context_link = 0;
+	
+	CGLGetParameter( ctx, kCGLCPClientStorage, (int*) &glm_context_link );
+	
+	if ( glm_context_link )
+	{
+		return (GLMContext*) glm_context_link;
+	}
+	else
+	{
+		return NULL;
+	}
 #else
 	Assert( 0 );
 	return NULL;
@@ -483,9 +573,11 @@ GLMContext *GLMgr::GetCurrentContext( void )
 // GLMContext public methods
 void GLMContext::MakeCurrent( bool bRenderThread )
 {
-	tmZone( TELEMETRY_LEVEL0, 0, "GLMContext::MakeCurrent" );
+	TM_ZONE( TELEMETRY_LEVEL0, 0, "GLMContext::MakeCurrent" );
 	Assert( m_nCurOwnerThreadId == 0 || m_nCurOwnerThreadId == ThreadGetCurrentId() );
 		
+// !!! FIXME: why isn't this abstracted in appframework?
+//	GLM_FUNC;
 #if defined( USE_SDL )
 
 #ifndef CHECK_THREAD_USAGE
@@ -520,6 +612,9 @@ void GLMContext::MakeCurrent( bool bRenderThread )
 	}
 #endif
 
+#elif defined( OSX )
+	m_nCurOwnerThreadId = ThreadGetCurrentId();
+	CGLSetCurrentContext( m_ctx );
 #else
 	Assert( 0 );
 #endif
@@ -528,7 +623,7 @@ void GLMContext::MakeCurrent( bool bRenderThread )
 
 void GLMContext::ReleaseCurrent( bool bRenderThread )
 {
-	tmZone( TELEMETRY_LEVEL0, 0, "GLMContext::ReleaseCurrent" );
+	TM_ZONE( TELEMETRY_LEVEL0, 0, "GLMContext::ReleaseCurrent" );
 	Assert( m_nCurOwnerThreadId == ThreadGetCurrentId() );
 		
 #if defined( USE_SDL )
@@ -551,6 +646,9 @@ void GLMContext::ReleaseCurrent( bool bRenderThread )
 	}
 #endif
 
+#elif defined( OSX )
+	m_nCurOwnerThreadId = 0;
+	CGLSetCurrentContext( NULL );
 #else
 	Assert( 0 );
 #endif
@@ -659,7 +757,7 @@ void GLMContext::DumpCaps( void )
 	#define	dumpfield_hex( fff )	printf( "\n  %-30s : 0x%08x", #fff, (int) m_caps.fff )
 	#define	dumpfield_str( fff )	printf( "\n  %-30s : %s", #fff, m_caps.fff )
 
-	printf("\n-------------------------------- context caps for context %08x", (uint)this);
+	printf("\n-------------------------------- context caps for context %p", this);
 
 	dumpfield( m_fullscreen );
 	dumpfield( m_accelerated );
@@ -742,46 +840,61 @@ void GLMContext::DumpCaps( void )
 	#undef dumpfield_str
 }
 
-CGLMTex	*GLMContext::NewTex( GLMTexLayoutKey *key, const char *debugLabel )
+CGLMTex	*GLMContext::NewTex( GLMTexLayoutKey *key, uint levels, const char *debugLabel )
 {
 	// get a layout based on the key
 	GLMTexLayout *layout = m_texLayoutTable->NewLayoutRef( key );
 			
-	CGLMTex *tex = new CGLMTex( this, layout, debugLabel );
+	CGLMTex *tex = new CGLMTex( this, layout, levels, debugLabel );
 	
 	return tex;
 }
 
 void GLMContext::DelTex( CGLMTex * tex )
 {
-	for( int i = 0; i < GLM_SAMPLER_COUNT; i++)
+	//Queue the texture for deletion in ProcessTextureDeletes
+	//when we are sure we will hold the context.
+	m_DeleteTextureQueue.PushItem(tex);
+}
+
+void GLMContext::ProcessTextureDeletes()
+{
+#if GL_TELEMETRY_GPU_ZONES
+	CScopedGLMPIXEvent glmEvent( "GLMContext::ProcessTextureDeletes" );
+#endif
+
+	CGLMTex* tex = nullptr;
+	while ( m_DeleteTextureQueue.PopItem( &tex ) )
 	{
-		if ( m_samplers[i].m_pBoundTex == tex )
+		for( int i = 0; i < GLM_SAMPLER_COUNT; i++)
 		{
-			BindTexToTMU( NULL, i );
-		}
-	}
-			
-	if ( tex->m_rtAttachCount != 0 )
-	{
-		// RG - huh? wtf? TODO: fix this code which seems to be purposely leaking
-		// leak it and complain - we may have to implement a deferred-delete system for tex like these
-
-		GLMDebugPrintf("GLMContext::DelTex: Leaking tex %08x [ %s ] - was attached for drawing at time of delete",tex, tex->m_layout->m_layoutSummary );
-
-		#if 0
-			// can't actually do this yet as the draw calls will tank
-			FOR_EACH_VEC( m_fboTable, i )
+			if ( m_samplers[i].m_pBoundTex == tex )
 			{
-				CGLMFBO *fbo = m_fboTable[i];
-				fbo->TexScrub( tex );
+				BindTexToTMU( NULL, i );
 			}
-			tex->m_rtAttachCount = 0;
-		#endif
-	}
-	else
-	{	
-		delete tex;
+		}
+			
+		if ( tex->m_rtAttachCount != 0 )
+		{
+			// RG - huh? wtf? TODO: fix this code which seems to be purposely leaking
+			// leak it and complain - we may have to implement a deferred-delete system for tex like these
+
+			GLMDebugPrintf("GLMContext::DelTex: Leaking tex %08x [ %s ] - was attached for drawing at time of delete",tex, tex->m_layout->m_layoutSummary );
+
+			#if 0
+				// can't actually do this yet as the draw calls will tank
+				FOR_EACH_VEC( m_fboTable, i )
+				{
+					CGLMFBO *fbo = m_fboTable[i];
+					fbo->TexScrub( tex );
+				}
+				tex->m_rtAttachCount = 0;
+			#endif
+		}
+		else
+		{	
+			delete tex;
+		}
 	}
 }
 
@@ -909,8 +1022,11 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		break;
 		
 		case GL_DEPTH_STENCIL_EXT:
-			formatClass = eDepthStencil;
-			blitMask = GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
+            // only support depth only blits for now
+            formatClass = eDepth;
+			blitMask = GL_DEPTH_BUFFER_BIT;
+            //formatClass = eDepthStencil;
+            //blitMask = GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
 		break;
 
 		default:
@@ -1055,6 +1171,22 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	else
 	{
 #if 1
+        if ( ( blitMask == GL_DEPTH_BUFFER_BIT ) && ( srcTex->m_pBlitSrcFBO != NULL ) && ( dstTex->m_pBlitDstFBO != NULL ) )
+        {
+            // ensure fbo completeness for both src and dst buffers
+            
+            // on OSX need to call glReadBuffer and glDrawBuffer with GL_NONE for both in order to satify fb completeness (don't need this on Linux)
+            
+            // correct bindings applied below
+            
+            BindFBOToCtx( srcTex->m_pBlitSrcFBO, GL_DRAW_FRAMEBUFFER_EXT );
+            gGL->glDrawBuffer( GL_NONE );
+           
+            BindFBOToCtx( dstTex->m_pBlitDstFBO, GL_READ_FRAMEBUFFER_EXT );
+            gGL->glReadBuffer( GL_NONE );
+       }
+        
+        
 		if (srcTex->m_pBlitSrcFBO == NULL) 
 		{
 			srcTex->m_pBlitSrcFBO = NewFBO();
@@ -1071,7 +1203,6 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		else 
 		{
 			BindFBOToCtx		( srcTex->m_pBlitSrcFBO, GL_READ_FRAMEBUFFER_EXT );
-			//                     GLMCheckError();
 		}
 #else
 		// arrange source surface on FBO1 for blit directly to dest (which could be FBO0 or BACK)
@@ -1088,9 +1219,18 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		}
 #endif
 
-		gGL->glReadBuffer( glAttachFromClass[formatClass] );
+		if ( blitMask != GL_DEPTH_BUFFER_BIT )
+		{
+			gGL->glReadBuffer( glAttachFromClass[formatClass] );
+		}
+		else
+		{
+			gGL->glReadBuffer( GL_NONE );
+        }
 	}
 	
+
+
 	//----------------------------------------------------------------- zero or one blits may have happened above, whichever took place, FBO1 is now on read
 	
 	bool yflip = false;
@@ -1123,7 +1263,12 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		} 
 		else
 		{
-			BindFBOToCtx( dstTex->m_pBlitDstFBO, GL_DRAW_FRAMEBUFFER_EXT );
+            BindFBOToCtx( dstTex->m_pBlitDstFBO, GL_DRAW_FRAMEBUFFER_EXT );
+            
+			if ( blitMask == GL_DEPTH_BUFFER_BIT )
+			{
+                gGL->glDrawBuffer( GL_NONE );
+            }
 		}
 #else
 		BindFBOToCtx( m_scratchFBO[0], GL_DRAW_FRAMEBUFFER_EXT );							GLMCheckError();								
@@ -1141,6 +1286,7 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		gGL->glDrawBuffer		( glAttachFromClass[formatClass] );										GLMCheckError();
 #endif							
 	}
+
 
 	// final blit
 	
@@ -1161,9 +1307,9 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	}
 	else
 	{
-		gGL->glBlitFramebufferEXT(	srcRect->xmin, srcRect->ymin, srcRect->xmax, srcRect->ymax,
-								dstRect->xmin, dstRect->ymin, dstRect->xmax, dstRect->ymax,
-								blitMask, filter );
+		gGL->glBlitFramebufferEXT( srcRect->xmin, srcRect->ymin, srcRect->xmax, srcRect->ymax,
+								   dstRect->xmin, dstRect->ymin, dstRect->xmax, dstRect->ymax,
+								   blitMask, filter );
 	}
 
 	//----------------------------------------------------------------- scrub READ and maybe DRAW FBO, and unbind
@@ -1749,8 +1895,7 @@ void GLMContext::PreloadTex( CGLMTex *tex, bool force )
 	{
 		gGL->glBindSampler( 15, 0 );
 	}
-#endif // !OSX
-
+#endif    
 	BindTexToTMU( tex, 15 );
 	
 	// unbind vertex/index buffers
@@ -2092,6 +2237,109 @@ void GLMContext::Clear( bool color, unsigned long colorValue, bool depth, float 
 #endif
 }
 
+#ifdef _OSX
+void GLMContext::UpdateSwapchainVariables( bool bForce )
+{
+	static ConVarRef r_frameratesmoothing( "r_frameratesmoothing" );
+	const bool cbUpdateFramerateSmoothing = bForce || r_frameratesmoothing.GetBool() != m_bFramerateSmoothing;
+	const bool cbUpdateSwapLimit = bForce || gl_swap_limit.GetBool() != m_bSwapLimit;
+
+	
+	// Bail if no work to do.
+	if ( !cbUpdateFramerateSmoothing && !cbUpdateSwapLimit )
+		return;
+#ifdef USE_SDL
+	CGLContextObj context = GetCGLContextFromNSGL( m_ctx );
+#else
+	auto context = m_ctx;
+#endif
+
+	if ( cbUpdateFramerateSmoothing )
+	{
+		bool new_mtgl = m_caps.m_hasPerfPackage1;	// i.e. 10.6.4 plus new driver
+
+
+		if ( CommandLine()->FindParm( "-glmenablemtgl2" ) )
+		{
+			new_mtgl = true;
+		}
+
+		if ( CommandLine()->FindParm( "-glmdisablemtgl2" ) )
+		{
+			new_mtgl = false;
+		}
+
+		// Enable if we can and we haven't been told not to.
+		bool mtgl_on = m_displayParams.m_mtgl && !r_frameratesmoothing.GetBool();
+
+		if ( CommandLine()->FindParm( "-glmenablemtgl" ) )
+		{
+			mtgl_on = true;
+		}
+
+		if ( CommandLine()->FindParm( "-glmdisablemtgl" ) )
+		{
+			mtgl_on = false;
+		}
+
+		CGLError result = ( CGLError ) 0;
+		bool ready = false;
+		if ( new_mtgl )
+		{
+			// afterburner
+			CGLContextEnable kCGLCPGCDMPEngine = ( ( CGLContextEnable ) 1314 );
+			result = mtgl_on ? CGLEnable(  context, kCGLCPGCDMPEngine )
+			                 : CGLDisable( context, kCGLCPGCDMPEngine );
+
+			if ( !result )
+			{
+				ready = true;	// succeeded - no need to try non-MTGL
+				printf( "\nMTGL2 %s.\n", mtgl_on ? "enabled" : "disabled" );
+			}
+			else
+			{
+				printf( "\nMTGL2 *not* enabled, falling back.\n" );
+			}
+		}
+
+		if ( !ready )
+		{
+			// try old MTGL
+			result = mtgl_on ? CGLEnable(  context, kCGLCEMPEngine )
+			                 : CGLDisable( context, kCGLCEMPEngine );
+			if ( !result )
+			{
+				printf( "\nMTGL %s.\n", mtgl_on ? "enabled" : "disabled" );
+				ready = true;
+			}
+		}
+
+		// Make sure we can detect edges on this properly.
+		m_bFramerateSmoothing = r_frameratesmoothing.GetBool();
+	}
+
+	if ( cbUpdateSwapLimit )
+	{
+
+		if ( gl_swap_limit.GetBool() )
+		{
+			// Limit the number of frames in flight to 1.
+			CGLEnable( context, kCGLCESwapLimit );
+			printf( "Swap Limit Enabled\n" );
+		}
+		else
+		{
+			CGLDisable( context, kCGLCESwapLimit );
+			printf( "Swap Limit Disabled\n" );
+		}
+
+		// Make sure we can detect edges on this properly.
+		m_bSwapLimit = gl_swap_limit.GetBool();
+	}
+}
+#endif
+
+
 
 // stolen from glmgrbasics.cpp
 extern "C" uint GetCurrentKeyModifiers( void );
@@ -2205,6 +2453,12 @@ void GLMContext::EndFrame( void )
 	
 	do
 	{
+#endif
+		if (!m_oneCtxEnable)	// if using dual contexts, this flush is needed
+		{
+			gGL->glFlush();
+		}
+#if GLMDEBUG
 		DebugHook( &info );
 	} while (info.m_loop);
 #endif
@@ -2244,6 +2498,8 @@ void GLMContext::Present( CGLMTex *tex )
 		g_TelemetryGPUStats.m_nTotalPresent++;
 #endif
 
+		ProcessTextureDeletes();
+
 #ifdef HAVE_GL_ARB_SYNC
 
 		if ( gGL->m_bHave_GL_AMD_pinned_memory )
@@ -2271,8 +2527,7 @@ void GLMContext::Present( CGLMTex *tex )
 				m_persistentBuffer[m_nCurPersistentBuffer][lpType].BlockUntilNotBusy();
 			}
 		}
-
-#endif // HAVE_GL_ARB_SYNC
+#endif
 					
 		bool newRefreshMode = false;
 		// two ways to go:
@@ -2280,7 +2535,7 @@ void GLMContext::Present( CGLMTex *tex )
 		// old school, do the resolve, had the tex down to cocoamgr to actually blit.
 		// that way is required if you are not in one-context mode (10.5.8)
 	
-		if ( (gl_blitmode.GetInt() != 0) )
+		if ( m_oneCtxEnable && (gl_blitmode.GetInt() != 0) )
 		{
 			newRefreshMode = true;
 		}
@@ -2350,28 +2605,41 @@ void GLMContext::Present( CGLMTex *tex )
 				// we set showparams.m_noBlit, and just let CocoaMgr handle the swap (flushbuffer / page flip)
 				showparams.m_noBlit = true;
 
-				BindFBOToCtx( NULL, GL_FRAMEBUFFER_EXT );
+				if (m_oneCtxEnable)			// if using single context, we need to blast some state so GLM will recover after the FBO fiddlin'
+				{
+					BindFBOToCtx( NULL, GL_FRAMEBUFFER_EXT );
+				}
 			}
 			else
 			{
 				ResolveTex( tex, true );	// dxabstract used to do this unconditionally.we still do if new refresh mode doesn't engage.
-
-				BindFBOToCtx( NULL, GL_FRAMEBUFFER_EXT );
-
+			
+				if (m_oneCtxEnable)			// if using single context, we need to blast some state so GLM will recover after the FBO fiddlin'
+				{
+					BindFBOToCtx( NULL, GL_FRAMEBUFFER_EXT );
+				}
+				else
+				{
+					gGL->glFlush();					// this call is needed for dual context mode to get pixels flushed
+				}
+			
 				// showparams.m_noBlit is left set to 0.  CocoaMgr does the blit.
 			}
 
 			ShowPixels(&showparams);
 		}
 
-		//	put the original FB back in place (both read and draw)
-		// this bind will hit both read and draw bindings
-		BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER_EXT );
-
-		// put em back !!
-		m_ScissorEnable.Flush();	
-		m_ScissorBox.Flush();
-		m_ViewportBox.Flush();		
+		if (m_oneCtxEnable)
+		{
+			//	put the original FB back in place (both read and draw)
+			// this bind will hit both read and draw bindings
+			BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER_EXT );
+			
+			// put em back !!
+			m_ScissorEnable.Flush();	
+			m_ScissorBox.Flush();
+			m_ViewportBox.Flush();		
+		}
 	}
 
 	m_nCurFrame++;
@@ -2381,7 +2649,10 @@ void GLMContext::Present( CGLMTex *tex )
 	m_nTotalVSUniformCalls = 0, m_nTotalVSUniformBoneCalls = 0, m_nTotalVSUniformsSet = 0, m_nTotalVSUniformsBoneSet = 0, m_nTotalPSUniformCalls = 0, m_nTotalPSUniformsSet = 0;
 #endif
 
-#ifndef OSX
+#ifdef _OSX
+	// Give ourselves a chance to update the swapchain parameters on OSX.
+	UpdateSwapchainVariables( false );
+#else
 	GLMGPUTimestampManagerTick();
 #endif
 }
@@ -2413,6 +2684,10 @@ bool GLMContext::SetDisplayParams( GLMDisplayParams *params )
 }
 
 
+// this decides whether the engine will try to use fast context mode on 10.6.3 or later.
+// fast context mode means that a single GL context is used both for the window and the engine, saving on sync and flushes.
+// it's only a suggestion; if the OS is below 10.6.2 it will be ignored.
+ConVar gl_singlecontext		( "gl_singlecontext", "1" );
 ConVar gl_can_query_fast("gl_can_query_fast", "0");
 
 static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
@@ -2440,17 +2715,21 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	// really use them in this codebase anyhow, except to preload textures.
 	m_bUseSamplerObjects = false;
 	if ( CommandLine()->CheckParm( "-gl_enablesamplerobjects" ) )
+	{
 		m_bUseSamplerObjects = true;
+	}
 
 	// Try to get some more free memory by relying on driver host copies instead of ours.
-	//  In some cases the driver will be able to discard their own host copy and rely on GPU
-	//  memory, reducing memory usage.
+	// In some cases the driver will be able to discard their own host copy and rely on GPU
+	// memory, reducing memory usage.
 	// Sadly, we have to enable tex client storage for srgb decoding. This should only happen
-	//  on Macs w/ OSX 10.6.
+	// on Macs w/ OSX 10.6.
 	m_bTexClientStorage = !gGL->m_bHave_GL_EXT_texture_sRGB_decode;
 	if ( CommandLine()->CheckParm( "-gl_texclientstorage" ) )
+	{
 		m_bTexClientStorage = true;
-
+	}
+	
 	char buf[256];
 	V_snprintf( buf, sizeof( buf ), "GL sampler object usage: %s\n", m_bUseSamplerObjects ? "ENABLED" : "DISABLED" );
 	Plat_DebugString( buf );
@@ -2463,7 +2742,7 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nBatchCounter = 0;
 
 	ClearCurAttribs();
-
+    
 #ifndef OSX
 	m_nCurPinnedMemoryBuffer = 0;
 	if ( gGL->m_bHave_GL_AMD_pinned_memory )
@@ -2488,7 +2767,8 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 			}
 		}
 	}
-
+	
+    
 	m_bUseBoneUniformBuffers = true;
 	if (CommandLine()->CheckParm("-disableboneuniformbuffers"))
 	{
@@ -2527,7 +2807,16 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nsctx	= NULL;
 	m_ctx	= NULL;
 	
+#ifdef OSX
+	// call Cocoa manager, ask for the attrib list (also naming the specific renderer ID) and use that to make our context
+	CGLPixelFormatAttribute *selAttribs	=	NULL;
+#elif defined(LINUX)
 	int *selAttribs	=	NULL;
+#elif defined(_WIN32 )
+	int *selAttribs	=	NULL;
+#else
+#error
+#endif
 	uint					selWords	=	0;
 
 	memset( &m_caps, 0, sizeof( m_caps ) );
@@ -2537,6 +2826,41 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 #if defined( USE_SDL )
 	m_ctx = (SDL_GLContext)GetGLContextForWindow( params ? (void*)params->m_focusWindow : NULL );
 	MakeCurrent( true );
+	m_oneCtxEnable = true;
+#elif defined( OSX )
+	// call Cocoa manager, ask it about the window we're targeting, get the NSGLContext back, share against that	
+	PseudoNSGLContextPtr shareNsCtx = GetNSGLContextForWindow( (void*)params->m_focusWindow );
+
+	// decide if we're going to try single context mode.
+	m_oneCtxEnable = (m_caps.m_osComboVersion >= 0x000A0603) && (gl_singlecontext.GetInt() );
+
+	bool success = false;	//NewNSGLContext( (unsigned long*)selAttribs, shareNsCtx, &m_nsctx, &m_ctx );
+	if(m_oneCtxEnable)
+	{
+		// just steal the window's context
+		m_nsctx	= shareNsCtx;
+		m_ctx	= GetCGLContextFromNSGL( shareNsCtx );
+		
+		success	= (m_nsctx != NULL) && (m_ctx != NULL);
+	}
+	else
+	{
+		success = NewNSGLContext( (unsigned long*)selAttribs, shareNsCtx, &m_nsctx, &m_ctx );
+	}
+	
+	if (success)
+	{
+		//write a cookie into the CGL context leading back to the GLM context object
+		intp	glm_context_link = (intp) this;
+		CGLSetParameter( m_ctx, kCGLCPClientStorage, (int*) &glm_context_link );
+		
+		// save off the pixel format attributes we used		
+		memcpy(m_pixelFormatAttribs, selAttribs, selBytes );
+	}
+	else
+	{
+		DebuggerBreak(); //FIXME #PMB# bad news, maybe exit to shell if this happens
+	}
 #else
 #error
 #endif
@@ -2583,17 +2907,17 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 #ifndef OSX
 	if ( m_bUseSamplerObjects )
-	{
-		memset( m_samplerObjectHash, 0, sizeof( m_samplerObjectHash ) );
-		m_nSamplerObjectHashNumEntries = 0;
-	
-		for ( uint i = 0; i < cSamplerObjectHashSize; ++i )
-		{
-			gGL->glGenSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
-		}
-	}
-#endif // !OSX
+    {
+        memset( m_samplerObjectHash, 0, sizeof( m_samplerObjectHash ) );
+        m_nSamplerObjectHashNumEntries = 0;
 
+        for ( uint i = 0; i < cSamplerObjectHashSize; ++i )
+        {
+            gGL->glGenSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
+        }
+	}
+#endif
+    
 	memset( m_samplers, 0, sizeof( m_samplers ) );
 	for( int i=0; i< GLM_SAMPLER_COUNT; i++)
 	{
@@ -2713,62 +3037,7 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	}
 
 #ifdef OSX
-	bool new_mtgl = m_caps.m_hasPerfPackage1;	// i.e. 10.6.4 plus new driver
-	
-	if ( CommandLine()->FindParm("-glmenablemtgl2") )
-	{
-		new_mtgl = true;
-	}
-
-	if ( CommandLine()->FindParm("-glmdisablemtgl2") )
-	{
-		new_mtgl = false;
-	}
-
-	bool mtgl_on = params->m_mtgl;
-	if (CommandLine()->FindParm("-glmenablemtgl"))
-	{
-		mtgl_on = true;
-	}
-	
-	if (CommandLine()->FindParm("-glmdisablemtgl"))
-	{
-		mtgl_on = false;
-	}
-
-	CGLError result = (CGLError)0;
-	if (mtgl_on)
-	{
-		bool ready = false;
-		CGLContextObj context = GetCGLContextFromNSGL(m_ctx);
-		if (new_mtgl)
-		{
-			// afterburner
-			CGLContextEnable kCGLCPGCDMPEngine = ((CGLContextEnable)1314);
-			result = CGLEnable( context, kCGLCPGCDMPEngine );
-			if (!result)
-			{
-				ready = true;	// succeeded - no need to try non-MTGL
-				printf("\nMTGL detected.\n");
-			}
-			else
-			{
-				printf("\nMTGL *not* detected, falling back.\n");
-			}
-		}
-
-		if (!ready)
-		{
-			// try old MTGL
-			result = CGLEnable( context, kCGLCEMPEngine );
-			if (!result)
-			{
-				printf("\nMTGL has been detected.\n");
-				ready = true;	// succeeded - no need to try non-MTGL
-			}
-		}
-	}
-
+	UpdateSwapchainVariables( true );
 	if ( m_caps.m_badDriver108Intel )
 	{
 		// this way we have something to look for in terminal spew if users report issues related to this in the future.
@@ -2791,12 +3060,6 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nTotalPSUniformCalls = 0;
 	m_nTotalPSUniformsSet = 0;
 #endif
-
-	// See g_D3DRS_INFO_packed in dxabstract.cpp; dithering is a non-managed
-	// piece of state that we consider off by default. However it is actually
-	// enabled by default in the GL spec, so account for that here.
-	// See: https://bugs.freedesktop.org/show_bug.cgi?id=74700
-	gGL->glDisable( GL_DITHER );
 }
 
 void GLMContext::Reset()
@@ -2807,7 +3070,7 @@ GLMContext::~GLMContext	()
 {
 #ifndef OSX
 	GLMGPUTimestampManagerDeinit();
-		
+
 	for ( uint t = 0; t < cNumPinnedMemoryBuffers; t++ )
 	{
 		m_PinnedMemoryBuffers[t].Deinit();
@@ -2832,18 +3095,20 @@ GLMContext::~GLMContext	()
 		}
 
 		for( int i=0; i< cSamplerObjectHashSize; i++)
-		{
-			gGL->glDeleteSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
-			m_samplerObjectHash[i].m_samplerObject = 0;
-		}
-	}
-#endif // !OSX
-
+        {
+            gGL->glDeleteSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
+            m_samplerObjectHash[i].m_samplerObject = 0;
+        }
+    }
+#endif
+    
 	if (m_debugFontTex)
 	{
 		DelTex( m_debugFontTex );
 		m_debugFontTex = NULL;
 	}
+
+	ProcessTextureDeletes();
 
 	if ( m_pNullFragmentProgram )
 	{
@@ -2868,6 +3133,15 @@ GLMContext::~GLMContext	()
 	// we need a m_texTable I think..
 
 	// m_texLayoutTable can be scrubbed once we know that all the tex are freed
+
+#ifdef OSX
+	if (m_nsctx && (!m_oneCtxEnable) )
+	{
+		DelNSGLContext( m_nsctx );
+		m_nsctx	= NULL;
+		m_ctx	= NULL;	
+	}
+#endif
 
 	DecrementWindowRefCount();
 }
@@ -3021,6 +3295,7 @@ void GLMContext::FlushDrawStatesNoShaders( )
 			
 	NullProgram();
 }
+
 
 #if GLMDEBUG
 
@@ -4428,7 +4703,7 @@ void GLMContext::GenDebugFontTex( void )
 		key.m_texFormat		= D3DFMT_A8R8G8B8;
 		key.m_texFlags		= 0;
 
-		m_debugFontTex = NewTex( &key, "GLM debug font" );
+		m_debugFontTex = NewTex( &key, 1, "GLM debug font" );
 		
 
 		//-----------------------------------------------------
@@ -4455,7 +4730,7 @@ void GLMContext::GenDebugFontTex( void )
 		
 		//-----------------------------------------------------
 		// fetch elements of font data and make texels... we're doing the whole slab so we don't really need the stride info
-		unsigned long *destTexelPtr = (unsigned long *)lockAddress;
+		uint32 *destTexelPtr = (uint32 *)lockAddress;
 
 		for( int index = 0; index < 16384; index++ )
 		{
@@ -4899,11 +5174,11 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 	if ( pIndexBuf->m_bPseudo )
 	{
 		// you have to pass actual address, not offset
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_pPseudoBuf );
+		indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_pPseudoBuf );
 	}
 	if (pIndexBuf->m_bUsingPersistentBuffer)
 	{
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_nPersistentBufferStartOffset );
+		indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_nPersistentBufferStartOffset );
 	}
 
 #if GL_ENABLE_INDEX_VERIFICATION
@@ -4992,106 +5267,108 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 #endif
 	}
 }
-
 #else
 
 // support for OSX 10.6 (no support for glDrawRangeElementsBaseVertex)
+// legacy path that we're re-enabling for all OSX users as a result of perf regressions
+
 void GLMContext::DrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, CGLMBuffer *pIndexBuf)
 {
-	GLM_FUNC;
-
-	//	CheckCurrent();
-	++m_nBatchCounter;				// batch index increments unconditionally on entry
-
-	SetIndexBuffer( pIndexBuf );
-	void *indicesActual = (void*)indices;    
-	if ( pIndexBuf->m_bPseudo )
-	{
-		// you have to pass actual address, not offset
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_pPseudoBuf );
-	} 
-	if (pIndexBuf->m_bUsingPersistentBuffer)
-	{
-		indicesActual = (void*)( (int)indicesActual + (int)pIndexBuf->m_nPersistentBufferStartOffset );
-	}
-
+    GLM_FUNC;
+    
+    //	CheckCurrent();
+    ++m_nBatchCounter;				// batch index increments unconditionally on entry
+    
+    SetIndexBuffer( pIndexBuf );
+    void *indicesActual = (void*)indices;
+    if ( pIndexBuf->m_bPseudo )
+    {
+        // you have to pass actual address, not offset
+        indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_pPseudoBuf );
+    }
+    if (pIndexBuf->m_bUsingPersistentBuffer)
+    {
+        indicesActual = (void*)( (intp)indicesActual + (intp)pIndexBuf->m_nPersistentBufferStartOffset );
+    }
+    
 #if GLMDEBUG
-	// init debug hook information
-	GLMDebugHookInfo info;
-	memset(&info, 0, sizeof(info));
-	info.m_caller = eDrawElements;
-
-	// relay parameters we're operating under
-	info.m_drawMode = mode;
-	info.m_drawStart = start;
-	info.m_drawEnd = end;
-	info.m_drawCount = count;
-	info.m_drawType = type;
-	info.m_drawIndices = indices;
-
-	do
-	{
-		// obey global options re pre-draw clear
-		if (m_autoClearColor || m_autoClearDepth || m_autoClearStencil)
-		{
-			GLMPRINTF(("-- DrawRangeElements auto clear"));
-			this->DebugClear();
-		}
-
-		// always sync with editable shader text prior to draw
+    // init debug hook information
+    GLMDebugHookInfo info;
+    memset(&info, 0, sizeof(info));
+    info.m_caller = eDrawElements;
+    
+    // relay parameters we're operating under
+    info.m_drawMode = mode;
+    info.m_drawStart = start;
+    info.m_drawEnd = end;
+    info.m_drawCount = count;
+    info.m_drawType = type;
+    info.m_drawIndices = indices;
+    
+    do
+    {
+        // obey global options re pre-draw clear
+        if (m_autoClearColor || m_autoClearDepth || m_autoClearStencil)
+        {
+            GLMPRINTF(("-- DrawRangeElements auto clear"));
+            this->DebugClear();
+        }
+        
+        // always sync with editable shader text prior to draw
 #if GLMDEBUG
-		// TODO - fixup OSX 10.6 m_boundProg not used in this version togl (m_pBoundPair)
-		//FIXME disengage this path if context is in GLSL mode..
-		// it will need fixes to get the shader pair re-linked etc if edits happen anyway.
-
-		if (m_boundProgram[kGLMVertexProgram])
-		{
-			m_boundProgram[kGLMVertexProgram]->SyncWithEditable();
-		}
-		else
-		{
-			AssertOnce(!"drawing with no vertex program bound");
-		}
-
-		if (m_boundProgram[kGLMFragmentProgram])
-		{
-			m_boundProgram[kGLMFragmentProgram]->SyncWithEditable();
-		}
-		else
-		{
-			AssertOnce(!"drawing with no fragment program bound");
-		}
+        // TODO - fixup OSX 10.6 m_boundProg not used in this version togl (m_pBoundPair)
+        //FIXME disengage this path if context is in GLSL mode..
+        // it will need fixes to get the shader pair re-linked etc if edits happen anyway.
+        
+        if (m_boundProgram[kGLMVertexProgram])
+        {
+            m_boundProgram[kGLMVertexProgram]->SyncWithEditable();
+        }
+        else
+        {
+            AssertOnce(!"drawing with no vertex program bound");
+        }
+        
+        if (m_boundProgram[kGLMFragmentProgram])
+        {
+            m_boundProgram[kGLMFragmentProgram]->SyncWithEditable();
+        }
+        else
+        {
+            AssertOnce(!"drawing with no fragment program bound");
+        }
 #endif
-
-		// do the drawing
-		if ( m_pBoundPair )    
-		{
-			gGL->glDrawRangeElements(mode, start, end, count, type, indicesActual);
-			// GLMCheckError();
-
-			if (m_slowCheckEnable)
-			{
-				CheckNative();
-			}
-		}
-		this->DebugHook(&info);
-	} while (info.m_loop);
+        
+        // do the drawing
+        if ( m_pBoundPair )
+        {
+            gGL->glDrawRangeElements(mode, start, end, count, type, indicesActual);
+            GLMCheckError();
+            
+            if (m_slowCheckEnable)
+            {
+                CheckNative();
+            }
+        }
+        this->DebugHook(&info);
+    } while (info.m_loop);
 #else
-	if ( m_pBoundPair )
-	{
-		gGL->glDrawRangeElements(mode, start, end, count, type, indicesActual);
-
+    if ( m_pBoundPair )
+    {
+        gGL->glDrawRangeElements(mode, start, end, count, type, indicesActual);
+        
 #if GLMDEBUG
-		if ( m_slowCheckEnable )
-		{
-			CheckNative();
-		}
+        if ( m_slowCheckEnable )
+        {
+            CheckNative();
+        }
 #endif
-	}
+    }
 #endif
 }
 
-#endif // !OSX
+#endif // #ifndef OSX
+
 
 #if 0
 // helper function to do enable or disable in one step
@@ -5738,7 +6015,7 @@ void GLMTester::Test2( void )
 	for( int i=0; i<m_params.m_frameCount; i++)
 	{
 		// ramping shades of blue...
-		GLfloat clear_color[4] = { 0.50f, 0.05f, ((float)(i%100)) / 100.0f, 1.0f };		
+		GLfloat clear_color[4] = { 0.50f, 0.05f, ((float)(i%100)) / 100.0, 1.0f };		
 		gGL->glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
 		CheckGLError("test2 clear color");
 

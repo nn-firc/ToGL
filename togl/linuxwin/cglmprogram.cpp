@@ -1,26 +1,4 @@
-//========= Copyright Valve Corporation, All rights reserved. ============//
-//                       TOGL CODE LICENSE
-//
-//  Copyright 2011-2014 Valve Corporation
-//  All Rights Reserved.
-//
-//  Permission is hereby granted, free of charge, to any person obtaining a copy
-//  of this software and associated documentation files (the "Software"), to deal
-//  in the Software without restriction, including without limitation the rights
-//  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-//  copies of the Software, and to permit persons to whom the Software is
-//  furnished to do so, subject to the following conditions:
-//
-//  The above copyright notice and this permission notice shall be included in
-//  all copies or substantial portions of the Software.
-//
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-//  THE SOFTWARE.
+//============ Copyright (c) Valve Corporation, All rights reserved. ============
 //
 // cglmprogram.cpp
 //
@@ -30,7 +8,7 @@
 
 #include "filesystem.h"
 #include "tier1/fmtstr.h"
-#include "tier1/KeyValues.h"
+#include "tier1/keyvalues.h"
 #include "tier0/fasttimer.h"
 
 #if GLMDEBUG && defined( _MSC_VER )
@@ -40,6 +18,11 @@
 // memdbgon -must- be the last include file in a .cpp file.
 #include "tier0/memdbgon.h"
 
+#if GLMDEBUG
+#define GLM_FREE_SHADER_TEXT 0
+#else
+#define GLM_FREE_SHADER_TEXT 1
+#endif
 
 //===============================================================================
 
@@ -55,8 +38,8 @@ static int			gShaderLinkCount = 0;
 static CCycleCount	gShaderLinkQueryTime;
 CON_COMMAND( gl_shader_compile_time_dump, "Dump  stats shader compile time." )
 {
-	ConMsg( "Shader Compile Time: %u ms (Count: %d) / Query: %u ms \n", (uint32)gShaderCompileTime.GetMilliseconds(), gShaderCompileCount, (uint32)gShaderCompileQueryTime.GetMilliseconds() );
-	ConMsg( "Shader Link Time   : %u ms (Count: %d) / Query: %u ms \n", (uint32)gShaderLinkTime.GetMilliseconds(), gShaderLinkCount, (uint32)gShaderLinkQueryTime.GetMilliseconds() );
+	ConMsg( "Shader Compile Time: %ld ms (Count: %d) / Query: %ld ms \n", gShaderCompileTime.GetMilliseconds(), gShaderCompileCount, gShaderCompileQueryTime.GetMilliseconds() );
+	ConMsg( "Shader Link Time   : %ld ms (Count: %d) / Query: %ld ms \n", gShaderLinkTime.GetMilliseconds(), gShaderLinkCount, gShaderLinkQueryTime.GetMilliseconds() );
 }
 
 //===============================================================================
@@ -128,6 +111,10 @@ CGLMProgram::CGLMProgram( GLMContext *ctx, EGLMProgramType type )
 
 	m_nCentroidMask = 0;
 	m_nShadowDepthSamplerMask = 0;
+		
+	m_labelName[0]	= '\0';
+	m_labelIndex	= -1;
+	m_labelCombo	= -1;
 		
 	// no text has arrived yet.  That's done in SetProgramText.
 }
@@ -312,6 +299,25 @@ void	CGLMProgram::SetProgramText( char *text )
 			break;			
 		}
 	}
+
+	// find the label string
+	// example:
+	// trans#2871 label:vs-file vertexlit_and_unlit_generic_vs20 vs-index 294912 vs-combo 1234
+
+	char *lineStr = strstr( m_text, "// trans#" );
+	if (lineStr)
+	{
+		int		scratch = -1;
+		
+		if (this->m_type == kGLMVertexProgram)
+		{
+			sscanf( lineStr, "// trans#%d label:vs-file %s vs-index %d vs-combo %d", &scratch, m_labelName, &m_labelIndex, &m_labelCombo );
+		}
+		else
+		{
+			sscanf( lineStr, "// trans#%d label:ps-file %s ps-index %d ps-combo %d", &scratch, m_labelName, &m_labelIndex, &m_labelCombo );
+		}
+	}
 }
 
 void	CGLMProgram::CompileActiveSources	( void )
@@ -360,7 +366,7 @@ void	CGLMProgram::Compile( EGLMProgramLang lang )
 			char *lastCharOfSection = section + arbDesc->m_textLength;	// actually it's one past the last textual character
 			lastCharOfSection;
 
-			#if GLMDEBUG				
+			#if GLMDEBUG
 				if(noisy)
 				{
 					GLMPRINTF((">-D- CGLMProgram::Compile submitting following text for ARB %s program (name %d) ---------------------",
@@ -434,6 +440,15 @@ void	CGLMProgram::Compile( EGLMProgramLang lang )
 			#endif
 
 			gGL->glShaderSourceARB( glslDesc->m_object.glsl, 1, (const GLchar **)&section, &glslDesc->m_textLength);	
+
+#if GLM_FREE_SHADER_TEXT
+			// Free the shader program text - not needed anymore (GL has its own copy)
+			if ( m_text && !m_descs[kGLMARB].m_textPresent )
+			{
+				free( m_text );
+				m_text = NULL;
+			}
+#endif
 
 			// compile
 			gGL->glCompileShaderARB( glslDesc->m_object.glsl );
@@ -731,12 +746,14 @@ bool CGLMProgram::CheckValidity( EGLMProgramLang lang )
 			
 			if (!glslDesc->m_valid)
 			{
+				GLMPRINTF(("-D- ----- GLSL compile failed: \n %s \n",logString ));
+#if !GLM_FREE_SHADER_TEXT
 				char *temp = strdup(m_text);
 				temp[ glslDesc->m_textOffset + glslDesc->m_textLength ] = 0;
-				GLMPRINTF(("-D- ----- GLSL compile failed: \n %s \n",logString ));
 				GLMPRINTTEXT(( temp + glslDesc->m_textOffset, eDebugDump, GLMPRINTTEXT_NUMBEREDLINES ));
-				GLMPRINTF(("-D- -----end-----" ));
 				free( temp );
+#endif
+				GLMPRINTF(("-D- -----end-----" ));
 			}
 			
             if ( logString )
@@ -750,7 +767,9 @@ bool CGLMProgram::CheckValidity( EGLMProgramLang lang )
 	if ( !bValid )
 	{
 		GLMDebugPrintf( "Compile of \"%s\" Failed:\n", m_shaderName );
+#if !GLM_FREE_SHADER_TEXT
 		Plat_DebugString( m_text );
+#endif
 	}
 	AssertOnce( bValid );
 
@@ -770,6 +789,7 @@ void	CGLMProgram::LogSlow( EGLMProgramLang lang )
 
 	if (!desc->m_slowMark)
 	{
+#if !GLM_FREE_SHADER_TEXT
 		// log it
 		printf(	"\n-------------- Slow %s ( CGLMProgram @ %p, lang %s, name %d ) : \n%s \n",
 				m_type==kGLMVertexProgram ? "VS" : "FS",
@@ -778,6 +798,7 @@ void	CGLMProgram::LogSlow( EGLMProgramLang lang )
 				(int)(lang==kGLMGLSL ? (int)desc->m_object.glsl : (int)desc->m_object.arb),
 				m_text
 		);
+#endif
 	}
 	else	// complain on a decreasing basis (powers of two)
 	{
@@ -805,38 +826,16 @@ void	CGLMProgram::GetLabelIndexCombo		( char *labelOut, int labelOutMaxChars, in
 	// find the label string
 	// example:
 	// trans#2871 label:vs-file vertexlit_and_unlit_generic_vs20 vs-index 294912 vs-combo 1234
+	// Done in SetProgramText
 	
 	*labelOut = 0;
 	*indexOut = -1;
 
-	if ( !m_text )
-		return;
-
-	char *lineStr = strstr( m_text, "// trans#" );
-	if (lineStr)
+	if ((strlen( m_labelName ) != 0))
 	{
-		char	temp1[1024];
-		int		temp2,temp3;
-		int		scratch=-1;
-		temp1[0] = 0;
-		temp2 = -1;
-		temp3 = -1;
-		
-		if (this->m_type==kGLMVertexProgram)
-		{
-			sscanf( lineStr, "// trans#%d label:vs-file %s vs-index %d vs-combo %d", &scratch, temp1, &temp2, &temp3 );
-		}
-		else
-		{
-			sscanf( lineStr, "// trans#%d label:ps-file %s ps-index %d ps-combo %d", &scratch, temp1, &temp2, &temp3 );
-		}
-
-		if ( (strlen(temp1)!=0) )
-		{
-			Q_strncpy( labelOut, temp1, labelOutMaxChars );
-			*indexOut = temp2;
-			*comboOut = temp3;
-		}
+		Q_strncpy( labelOut, m_labelName, labelOutMaxChars );
+		*indexOut = m_labelIndex;
+		*comboOut = m_labelCombo;
 	}
 }
 
@@ -845,39 +844,16 @@ void	CGLMProgram::GetComboIndexNameString	( char *stringOut, int stringOutMaxCha
 	// find the label string
 	// example:
 	// trans#2871 label:vs-file vertexlit_and_unlit_generic_vs20 vs-index 294912 vs-combo 1234
+	// Done in SetProgramText
 	
 	*stringOut = 0;
 
-	if ( !m_text )
-		return;
-	
-	char *lineStr = strstr( m_text, "// trans#" );
-	if (lineStr)
+	int len = strlen( m_labelName );
+		
+	if ( (len+20) < stringOutMaxChars )
 	{
-		char	temp1[1024];
-		int		temp2,temp3;
-		int		scratch=-1;
-
-		temp1[0] = 0;
-		temp2 = -1;
-		temp3 = -1;
-		
-		if (this->m_type==kGLMVertexProgram)
-		{
-			sscanf( lineStr, "// trans#%d label:vs-file %s vs-index %d vs-combo %d", &scratch, temp1, &temp2, &temp3 );
-		}
-		else
-		{
-			sscanf( lineStr, "// trans#%d label:ps-file %s ps-index %d ps-combo %d", &scratch, temp1, &temp2, &temp3 );
-		}
-
-		int len = strlen(temp1);
-		
-		if ( (len+20) < stringOutMaxChars )
-		{
-			// output formatted version
-			sprintf( stringOut, "%08X-%08X-%s", temp3, temp2, temp1 );
-		}
+		// output formatted version
+		sprintf( stringOut, "%08X-%08X-%s", m_labelCombo, m_labelIndex, m_labelName );
 	}
 }
 
@@ -965,25 +941,26 @@ bool CGLMShaderPair::ValidateProgramPair()
 			GLcharARB *logString = (GLcharARB *)malloc( length * sizeof(GLcharARB) );
 			gGL->glGetInfoLogARB( m_program, length, &laux, logString );
 
+			GLMPRINTF( ("-D- ----- GLSL link failed: \n %s ", logString) );
+#if !GLM_FREE_SHADER_TEXT
 			char *vtemp = strdup( m_vertexProg->m_text );
 			vtemp[m_vertexProg->m_descs[kGLMGLSL].m_textOffset + m_vertexProg->m_descs[kGLMGLSL].m_textLength] = 0;
 
 			char *ftemp = strdup( m_fragmentProg->m_text );
 			ftemp[m_fragmentProg->m_descs[kGLMGLSL].m_textOffset + m_fragmentProg->m_descs[kGLMGLSL].m_textLength] = 0;
 
-			GLMPRINTF( ("-D- ----- GLSL link failed: \n %s ", logString) );
-
 			GLMPRINTF( ("-D- ----- GLSL vertex program selected: %08x (handle %08x)", m_vertexProg, m_vertexProg->m_descs[kGLMGLSL].m_object.glsl) );
 			GLMPRINTTEXT( (vtemp + m_vertexProg->m_descs[kGLMGLSL].m_textOffset, eDebugDump, GLMPRINTTEXT_NUMBEREDLINES) );
 
-			GLMPRINTF( ("-D- ----- GLSL fragment program selected: %08x (handle %08x)", m_fragmentProg, m_vertexProg->m_descs[kGLMGLSL].m_object.glsl) );
+			GLMPRINTF( ("-D- ----- GLSL fragment program selected: %08x (handle %08x)", m_fragmentProg, m_fragmentProg->m_descs[kGLMGLSL].m_object.glsl) );
 			GLMPRINTTEXT( (ftemp + m_fragmentProg->m_descs[kGLMGLSL].m_textOffset, eDebugDump, GLMPRINTTEXT_NUMBEREDLINES) );
-
-			GLMPRINTF( ("-D- -----end-----") );
 
 			free( ftemp );
 			free( vtemp );
+#endif
 			free( logString );
+
+			GLMPRINTF( ("-D- -----end-----") );
 		}
 
 		if (m_valid)
@@ -1166,7 +1143,7 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 				
 			gGL->glBindAttribLocationARB( m_program, i, tmp );
 		}
-
+#if !GLM_FREE_SHADER_TEXT
 		if (CommandLine()->CheckParm("-dumpallshaders"))
 		{
 			// Dump all shaders, for debugging.
@@ -1178,6 +1155,7 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 				fclose(pFile);
 			}
 		}
+#endif
 			
 		// now link
 		gGL->glLinkProgramARB( m_program );
